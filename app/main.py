@@ -77,9 +77,19 @@ from app.services.core_ml.features.feature_extractor import FeatureExtractor
 from app.services.core_ml.roi.roi_manager import ROIManager
 from app.services.core_ml.detection.detector import Detection
 
-device = 'cuda' if torch.cuda.is_available() else 'cpu'
-model = YOLO("app/models/best.pt").to(device)
-VEHICLE_CLASSES = {0: 'bus', 1: 'car', 2: 'motorcycle', 3: 'pickup', 4: 'truck'}
+# Otomatis menyesuaikan dengan GPU laptop (CUDA untuk NVIDIA RTX, MPS untuk MacOS, atau CPU untuk fallback)
+if torch.cuda.is_available():
+    device = 'cuda'
+    logger.info("🚀 Menggunakan GPU NVIDIA (CUDA) untuk pemrosesan.")
+elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+    device = 'mps'
+    logger.info("🚀 Menggunakan GPU Apple (MPS) untuk pemrosesan.")
+else:
+    device = 'cpu'
+    logger.info("⚠️ Menggunakan CPU (Fallback) karena GPU tidak terdeteksi.")
+
+model = YOLO("yolov8s.pt").to(device)
+VEHICLE_CLASSES = {0: 'person', 2: 'car', 3: 'motorcycle', 5: 'bus', 7: 'truck'}
 
 @app.get("/")
 def read_root():
@@ -125,13 +135,23 @@ async def websocket_endpoint(websocket: WebSocket, stream_id: str):
 
         cap = cv2.VideoCapture(stream_url)
         cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        
+        # Dapatkan FPS asli video untuk menampilkan speed 1.0x
+        video_fps = cap.get(cv2.CAP_PROP_FPS)
+        # HLS stream kadang mengembalikan nilai aneh seperti 0 atau 90000, kita batasi range yang masuk akal
+        if not video_fps or video_fps <= 0 or video_fps > 120:
+            video_fps = 30.0  # Default jika FPS tidak terbaca atau tidak wajar
+        frame_duration = 1.0 / video_fps
+
         frame_count = 0
-        skip_rate = 5  # Dinaikkan ke 5 agar proses lebih cepat & tidak macet
+        skip_rate = 2  # Diturunkan dari 5 ke 2 agar video jauh lebih smooth (tampil ~15 FPS)
 
         while state["running"]:
             start_waktu = time.time()
             if not cap.isOpened():
                 logger.warning("🔄 Reconnecting ke CCTV...")
+                if cap is not None:
+                    cap.release()
                 cap = cv2.VideoCapture(stream_url)
                 cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
                 time.sleep(1)
@@ -146,11 +166,16 @@ async def websocket_endpoint(websocket: WebSocket, stream_id: str):
 
             frame_count += 1
             if frame_count % skip_rate != 0:
+                # Sleep agar frame yang diskip tetap memakan waktu seperti video aslinya (1.0x speed)
+                elapsed_time = time.time() - start_waktu
+                sleep_time = frame_duration - elapsed_time
+                if sleep_time > 0:
+                    time.sleep(sleep_time)
                 continue
 
-            # Gunakan semua kelas karena custom model best.pt sudah spesifik (0: bus, 1: car, 2: motorcycle, 3: pickup, 4: truck)
-            # Tambahkan imgsz=480 agar resolusi komputasi lebih kecil dan pemrosesan lebih cepat
-            results = model(frame, verbose=False, conf=0.45, iou=0.45, imgsz=480, device=device)
+            # Menggunakan yolov8s.pt yang sudah dilatih pada COCO dataset.
+            # Parameter classes=[0, 2, 3, 5, 7] membatasi deteksi hanya pada person, car, motorcycle, bus, truck agar komputasi lebih ringan
+            results = model(frame, verbose=False, conf=0.45, iou=0.45, imgsz=480, device=device, classes=[0, 2, 3, 5, 7])
             
             detections = []
             if results and results[0].boxes:
@@ -160,7 +185,11 @@ async def websocket_endpoint(websocket: WebSocket, stream_id: str):
                 for box, conf, class_id in zip(boxes, confidences, class_ids):
                     x1, y1, x2, y2 = box
                     class_name = VEHICLE_CLASSES.get(int(class_id), 'unknown')
-                    # Map pickup ke truck agar sesuai dengan kolom database
+                    
+                    if class_name == 'unknown':
+                        continue # Abaikan objek yang bukan target kita
+                    
+                    # Map pickup ke truck jika kebetulan ada model yang mendeteksi pickup
                     if class_name == 'pickup':
                         class_name = 'truck'
                     
@@ -217,7 +246,12 @@ async def websocket_endpoint(websocket: WebSocket, stream_id: str):
             fps = 1.0 / waktu_proses_detik if waktu_proses_detik > 0 else 0.0
 
             loop.call_soon_threadsafe(put_to_queue, (payload, counts, latency_ms, fps))
-            time.sleep(0.001)
+            
+            # Sleep untuk frame yang diproses agar sesuai dengan kecepatan aslinya (1.0x)
+            elapsed_time = time.time() - start_waktu
+            sleep_time = frame_duration - elapsed_time
+            if sleep_time > 0:
+                time.sleep(sleep_time)
 
         cap.release()
 
