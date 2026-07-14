@@ -20,13 +20,18 @@ async def save_to_db(payload, counts):
         pool = get_db_pool()
         if not pool: return
         query_history = """
-        INSERT INTO traffic_history (stream_id, person_count, motorcycle_count, car_count, bus_count, truck_count, total_vehicle_count, person_vehicle_ratio, density_status)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id
+        INSERT INTO traffic_history (
+            stream_id, person_count, motorcycle_count, car_count, bus_count, truck_count, 
+            total_vehicle_count, person_vehicle_ratio, density_status,
+            average_speed, road_occupancy, congestion_index
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) RETURNING id
         """
         total_v = counts["motorcycle"] + counts["car"] + counts["bus"] + counts["truck"]
         hist_id = await pool.fetchval(query_history,
             payload["stream_id"], counts["person"], counts["motorcycle"], counts["car"], counts["bus"], counts["truck"],
-            total_v, payload["person_vehicle_ratio"], payload["density_status"]
+            total_v, payload["person_vehicle_ratio"], payload["density_status"],
+            payload.get("average_speed", 0.0), payload.get("road_occupancy", 0.0), payload.get("congestion_index", 0.0)
         )
         if payload["density_status"] in ["High Density", "Anomaly"]:
             query_alert = """
@@ -66,36 +71,15 @@ app.include_router(history.router)
 app.include_router(alerts.router)
 app.include_router(users.router)
 
+from app.services.core_ml.config import TrackingConfig, FeatureExtractionConfig
+from app.services.core_ml.tracking.byte_tracker import ByteTrackTracker
+from app.services.core_ml.features.feature_extractor import FeatureExtractor
+from app.services.core_ml.roi.roi_manager import ROIManager
+from app.services.core_ml.detection.detector import Detection
+
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
-model = YOLO("yolov8s.pt").to(device)
-
-def process_frame_sync(frame):
-    results = model(
-        frame,
-        classes=[0, 2, 3, 5, 7],
-        verbose=False,
-        conf=0.45,
-        iou=0.45,
-        device=device
-    )
-    counts = {"person": 0, "motorcycle": 0, "car": 0, "bus": 0, "truck": 0}
-
-    for box in results[0].boxes:
-        cid = int(box.cls[0])
-        if cid == 0: counts["person"] += 1
-        elif cid == 2: counts["car"] += 1
-        elif cid == 3: counts["motorcycle"] += 1
-        elif cid == 5: counts["bus"] += 1
-        elif cid == 7: counts["truck"] += 1
-
-    vehicle_total = counts["motorcycle"] + counts["car"] + counts["bus"] + counts["truck"]
-    status_jalan = predict_density(counts["person"], vehicle_total)
-    rasio = counts["person"] / vehicle_total if vehicle_total > 0 else 0.0
-    annotated_frame = results[0].plot()
-    _, buffer = cv2.imencode('.jpg', annotated_frame)
-    frame_b64 = base64.b64encode(buffer).decode('utf-8')
-
-    return counts, rasio, status_jalan, frame_b64
+model = YOLO("app/models/best.pt").to(device)
+VEHICLE_CLASSES = {0: 'bus', 1: 'car', 2: 'motorcycle', 3: 'pickup', 4: 'truck'}
 
 @app.get("/")
 def read_root():
@@ -135,10 +119,14 @@ async def websocket_endpoint(websocket: WebSocket, stream_id: str):
             pass
 
     def video_thread():
+        tracker = ByteTrackTracker(TrackingConfig())
+        roi_manager = ROIManager()
+        feature_extractor = FeatureExtractor(FeatureExtractionConfig(), roi_manager)
+
         cap = cv2.VideoCapture(stream_url)
         cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
         frame_count = 0
-        skip_rate = 1
+        skip_rate = 5  # Dinaikkan ke 5 agar proses lebih cepat & tidak macet
 
         while state["running"]:
             start_waktu = time.time()
@@ -160,7 +148,48 @@ async def websocket_endpoint(websocket: WebSocket, stream_id: str):
             if frame_count % skip_rate != 0:
                 continue
 
-            counts, rasio, status_jalan, frame_b64 = process_frame_sync(frame)
+            # Gunakan semua kelas karena custom model best.pt sudah spesifik (0: bus, 1: car, 2: motorcycle, 3: pickup, 4: truck)
+            # Tambahkan imgsz=480 agar resolusi komputasi lebih kecil dan pemrosesan lebih cepat
+            results = model(frame, verbose=False, conf=0.45, iou=0.45, imgsz=480, device=device)
+            
+            detections = []
+            if results and results[0].boxes:
+                boxes = results[0].boxes.xyxy.cpu().numpy()
+                confidences = results[0].boxes.conf.cpu().numpy()
+                class_ids = results[0].boxes.cls.cpu().numpy().astype(int)
+                for box, conf, class_id in zip(boxes, confidences, class_ids):
+                    x1, y1, x2, y2 = box
+                    class_name = VEHICLE_CLASSES.get(int(class_id), 'unknown')
+                    # Map pickup ke truck agar sesuai dengan kolom database
+                    if class_name == 'pickup':
+                        class_name = 'truck'
+                    
+                    detections.append(Detection(
+                        bbox=(int(x1), int(y1), int(x2), int(y2)),
+                        confidence=float(conf),
+                        class_id=int(class_id),
+                        class_name=class_name
+                    ))
+
+            # 1. Update Tracker
+            track_result = tracker.update(detections, frame, frame_count)
+            
+            # 2. Extract Features
+            features = feature_extractor.extract_frame_features(track_result.tracks, frame_count, time.time())
+
+            # 3. Predict Density (using advanced features)
+            status_jalan = predict_density(features)
+
+            counts = {"person": 0, "motorcycle": 0, "car": 0, "bus": 0, "truck": 0}
+            for class_name, count in features.class_distribution.items():
+                if class_name in counts:
+                    counts[class_name] = count
+
+            # Plot detections dengan kualitas JPEG yang dioptimasi agar ukuran Base64 mengecil
+            annotated_frame = results[0].plot()
+            _, buffer = cv2.imencode('.jpg', annotated_frame, [cv2.IMWRITE_JPEG_QUALITY, 60])
+            frame_b64 = base64.b64encode(buffer).decode('utf-8')
+            rasio = 0.0
 
             payload = {
                 "type": "frame_update",
@@ -168,6 +197,9 @@ async def websocket_endpoint(websocket: WebSocket, stream_id: str):
                 "counts": counts,
                 "person_vehicle_ratio": rasio,
                 "density_status": status_jalan,
+                "average_speed": round(features.average_speed, 2),
+                "road_occupancy": round(features.road_occupancy, 2),
+                "congestion_index": round(features.congestion_index, 2),
                 "frame_base64": frame_b64,
                 "frame": f"data:image/jpeg;base64,{frame_b64}"
             }

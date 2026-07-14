@@ -1,0 +1,15 @@
+2026-07-13 22:33:04,794 - TrafficStateDiscovery - INFO - __init__:54 - ByteTrack tracker initialized with thresh=0.5
+2026-07-13 22:33:41,562 - TrafficStateDiscovery - DEBUG - deactivate_stale_tracks:193 - Track 1 deactivated (last seen: 31 frames ago)
+2026-07-13 22:34:46,391 - TrafficStateDiscovery - INFO - __init__:54 - ByteTrack tracker initialized with thresh=0.5
+2026-07-13 22:34:51,857 - TrafficStateDiscovery - INFO - __init__:54 - ByteTrack tracker initialized with thresh=0.5
+2026-07-13 22:35:56,109 - TrafficStateDiscovery - INFO - __init__:54 - ByteTrack tracker initialized with thresh=0.5
+2026-07-13 22:36:02,617 - TrafficStateDiscovery - INFO - __init__:54 - ByteTrack tracker initialized with thresh=0.5
+2026-07-13 22:36:18,543 - TrafficStateDiscovery - INFO - __init__:54 - ByteTrack tracker initialized with thresh=0.5
+2026-07-13 22:36:34,207 - TrafficStateDiscovery - DEBUG - deactivate_stale_tracks:193 - Track 1 deactivated (last seen: 31 frames ago)
+2026-07-13 22:37:06,425 - TrafficStateDiscovery - DEBUG - deactivate_stale_tracks:193 - Track 2 deactivated (last seen: 31 frames ago)
+2026-07-13 22:37:08,268 - TrafficStateDiscovery - DEBUG - deactivate_stale_tracks:193 - Track 3 deactivated (last seen: 31 frames ago)
+2026-07-13 22:37:09,185 - TrafficStateDiscovery - DEBUG - deactivate_stale_tracks:193 - Track 4 deactivated (last seen: 31 frames ago)
+2026-07-13 22:37:10,808 - TrafficStateDiscovery - DEBUG - deactivate_stale_tracks:193 - Track 5 deactivated (last seen: 31 frames ago)
+2026-07-13 22:37:18,079 - TrafficStateDiscovery - INFO - __init__:54 - ByteTrack tracker initialized with thresh=0.5
+2026-07-13 22:37:38,487 - TrafficStateDiscovery - DEBUG - deactivate_stale_tracks:193 - Track 1 deactivated (last seen: 31 frames ago)
+2026-07-13 22:37:59,849 - TrafficStateDiscovery - DEBUG - deactivate_stale_tracks:193 - Track 2 deactivated (last seen: 31 frames ago)

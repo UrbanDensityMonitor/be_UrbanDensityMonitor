@@ -9,17 +9,13 @@ if os.path.exists(MODEL_PATH):
     with open(MODEL_PATH, "rb") as f:
         kmeans_model = pickle.load(f)
 
-def predict_density(person_count, vehicle_count, is_raining=False):
+def predict_density(features, is_raining=False):
+    vehicle_count = features.vehicle_count
+    
     if vehicle_count == 0:
-        if person_count > 20: return "Anomaly"
-        else: return "Low Density"
+        return "Low Density"
 
-    if is_raining and vehicle_count > 10:
-        return "Anomaly"
-
-    person_vehicle_ratio = person_count / vehicle_count if vehicle_count > 0 else 0.0
-
-    if person_vehicle_ratio > 3.0 and person_count > 15:
+    if is_raining and vehicle_count > 100: # Adjust threshold for anomaly
         return "Anomaly"
 
     if kmeans_model is None:
@@ -27,7 +23,13 @@ def predict_density(person_count, vehicle_count, is_raining=False):
         elif vehicle_count < 40: return "Medium Density"
         else: return "High Density"
 
-    input_data = np.array([[person_count, vehicle_count, person_vehicle_ratio]])
+    input_data = np.array([[
+        vehicle_count, 
+        features.average_speed, 
+        features.road_occupancy, 
+        features.congestion_index
+    ]])
+    
     cluster_id = kmeans_model.predict(input_data)[0]
 
     if cluster_id == 0: return "Low Density"

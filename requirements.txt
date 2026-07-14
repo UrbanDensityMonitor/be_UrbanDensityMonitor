@@ -1,4 +1,4 @@
---extra-index-url https://download.pytorch.org/whl/cpu
+
 fastapi
 uvicorn[standard]
 ultralytics
@@ -9,3 +9,13 @@ python-dotenv
 PyJWT[crypto]
 numpy
 torch
+pandas
+colorlog
+filterpy
+shapely
+scipy
+matplotlib
+seaborn
+tqdm
+pyyaml
+statsmodels

@@ -32,7 +32,7 @@ def test_yolo(stream_url):
         if frame_count % skip_rate == 0:
             print(f"📸 Menganalisis Frame ke-{frame_count}...")
 
-            results = model(frame, classes=[0, 2, 3, 5, 7], verbose=False, device=device)
+            results = model(frame, classes=[2, 3, 5, 7], verbose=False, device=device)
 
             boxes = results[0].boxes
             print(f"🎯 KETEMU {len(boxes)} OBJEK DI FRAME {frame_count}!")
