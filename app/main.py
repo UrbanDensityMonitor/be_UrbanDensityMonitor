@@ -2,6 +2,7 @@ import asyncio
 import cv2
 import base64
 import time
+import datetime
 import torch
 import logging
 import threading
@@ -88,8 +89,8 @@ else:
     device = 'cpu'
     logger.info("⚠️ Menggunakan CPU (Fallback) karena GPU tidak terdeteksi.")
 
-model = YOLO("yolov8s.pt").to(device)
-VEHICLE_CLASSES = {0: 'person', 2: 'car', 3: 'motorcycle', 5: 'bus', 7: 'truck'}
+model = YOLO("app/models/best.pt").to(device)
+VEHICLE_CLASSES = {0: 'bus', 1: 'car', 2: 'motorcycle', 3: 'pickup', 4: 'truck'}
 
 @app.get("/")
 def read_root():
@@ -105,12 +106,14 @@ async def websocket_endpoint(websocket: WebSocket, stream_id: str):
         await websocket.close()
         return
     try:
-        query = "SELECT stream_url FROM streams WHERE id = $1"
-        stream_url = await pool.fetchval(query, stream_id)
-        if not stream_url:
+        query = "SELECT stream_url, location_name FROM streams WHERE id = $1"
+        row = await pool.fetchrow(query, stream_id)
+        if not row:
             logger.warning(f"❌ CCTV dengan ID {stream_id} tidak ditemukan!")
             await websocket.close()
             return
+        stream_url = row["stream_url"]
+        stream_name = row["location_name"] if row["location_name"] else f"Stream {stream_id}"
         logger.info(f"🎥 Membuka CCTV: {stream_url}")
 
     except Exception as e:
@@ -146,6 +149,12 @@ async def websocket_endpoint(websocket: WebSocket, stream_id: str):
         frame_count = 0
         skip_rate = 2  # Diturunkan dari 5 ke 2 agar video jauh lebih smooth (tampil ~15 FPS)
 
+        # ── State-transition alert ──────────────────────────────────────────────
+        # Alert hanya dikirim saat STATUS BERUBAH, bukan setiap frame.
+        # "dense"  = High Density / Anomaly  →  kirim alert RAMAI
+        # "normal" = Low / Medium            →  kirim alert SUDAH SEPI (jika sebelumnya ramai)
+        prev_alert_state = "normal"  # kondisi awal dianggap normal
+
         while state["running"]:
             start_waktu = time.time()
             if not cap.isOpened():
@@ -173,9 +182,10 @@ async def websocket_endpoint(websocket: WebSocket, stream_id: str):
                     time.sleep(sleep_time)
                 continue
 
-            # Menggunakan yolov8s.pt yang sudah dilatih pada COCO dataset.
-            # Parameter classes=[0, 2, 3, 5, 7] membatasi deteksi hanya pada person, car, motorcycle, bus, truck agar komputasi lebih ringan
-            results = model(frame, verbose=False, conf=0.45, iou=0.45, imgsz=480, device=device, classes=[0, 2, 3, 5, 7])
+            # Menggunakan custom model best.pt dengan class IDs sendiri (bukan COCO):
+            # {0: 'bus', 1: 'car', 2: 'motorcycle', 3: 'pickup', 4: 'truck'}
+            # classes=[0, 1, 2, 3, 4] membatasi deteksi hanya pada kendaraan target
+            results = model(frame, verbose=False, conf=0.45, iou=0.45, imgsz=480, device=device, classes=[0, 1, 2, 3, 4])
             
             detections = []
             if results and results[0].boxes:
@@ -203,16 +213,23 @@ async def websocket_endpoint(websocket: WebSocket, stream_id: str):
             # 1. Update Tracker
             track_result = tracker.update(detections, frame, frame_count)
             
-            # 2. Extract Features
-            features = feature_extractor.extract_frame_features(track_result.tracks, frame_count, time.time())
-
-            # 3. Predict Density (using advanced features)
-            status_jalan = predict_density(features)
-
+            # 2. Hitung counts langsung dari YOLO detections (bukan dari tracker)
+            # Tracker butuh min 5 frame sebelum track "aktif" → vehicle_count sering nol
             counts = {"person": 0, "motorcycle": 0, "car": 0, "bus": 0, "truck": 0}
-            for class_name, count in features.class_distribution.items():
-                if class_name in counts:
-                    counts[class_name] = count
+            for det in detections:
+                if det.class_name in counts:
+                    counts[det.class_name] += 1
+
+            # 3. Extract Features (untuk speed, occupancy, congestion)
+            features = feature_extractor.extract_frame_features(track_result.tracks, frame_count, time.time())
+            
+            # Override vehicle_count di features dengan hitungan langsung dari YOLO
+            # agar predict_density mendapat angka yang akurat
+            total_vehicle_direct = counts["motorcycle"] + counts["car"] + counts["bus"] + counts["truck"]
+            features.vehicle_count = total_vehicle_direct
+
+            # 4. Predict Density (pakai vehicle_count yang sudah di-override)
+            status_jalan = predict_density(features)
 
             # Plot detections dengan kualitas JPEG yang dioptimasi agar ukuran Base64 mengecil
             annotated_frame = results[0].plot()
@@ -233,12 +250,43 @@ async def websocket_endpoint(websocket: WebSocket, stream_id: str):
                 "frame": f"data:image/jpeg;base64,{frame_b64}"
             }
 
-            if status_jalan in ["High Density", "Anomaly"]:
+            # ── Tentukan state saat ini ─────────────────────────────────────────
+            current_alert_state = "dense" if status_jalan in ["High Density", "Anomaly"] else "normal"
+
+            # Hitung kendaraan dominan
+            vehicle_counts_only = {k: v for k, v in counts.items() if k != "person"}
+            dominant_vehicle = max(vehicle_counts_only, key=vehicle_counts_only.get) if any(vehicle_counts_only.values()) else "kendaraan"
+            dominant_label = {"car": "Mobil", "motorcycle": "Motor", "truck": "Truk", "bus": "Bus"}.get(dominant_vehicle, dominant_vehicle)
+
+            waktu_str = datetime.datetime.now().strftime("%H:%M WIB")
+
+            if current_alert_state == "dense" and prev_alert_state == "normal":
+                # Transisi: normal → ramai  →  kirim alert KEMACETAN
+                alert_msg = (
+                    f"🚨 KEPADATAN TINGGI terdeteksi di {stream_name} pukul {waktu_str}. "
+                    f"Total {total_vehicle_direct} kendaraan | Dominan: {dominant_label}."
+                )
                 payload["alert"] = {
                     "triggered": True,
                     "type": status_jalan,
-                    "message": f"🚨 {status_jalan.upper()} DETECTED!"
+                    "message": alert_msg
                 }
+                logger.info(f"🔔 Alert RAMAI dikirim: {alert_msg}")
+                prev_alert_state = "dense"
+
+            elif current_alert_state == "normal" and prev_alert_state == "dense":
+                # Transisi: ramai → normal  →  kirim notifikasi SUDAH SEPI
+                alert_msg = (
+                    f"✅ Kondisi jalan di {stream_name} sudah kembali normal pukul {waktu_str}. "
+                    f"Total kendaraan turun ke {total_vehicle_direct}."
+                )
+                payload["alert"] = {
+                    "triggered": True,
+                    "type": "cleared",
+                    "message": alert_msg
+                }
+                logger.info(f"🔔 Alert SEPI dikirim: {alert_msg}")
+                prev_alert_state = "normal"
 
             end_waktu = time.time()
             waktu_proses_detik = end_waktu - start_waktu
