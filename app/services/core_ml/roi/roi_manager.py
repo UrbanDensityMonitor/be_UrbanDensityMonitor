@@ -10,7 +10,9 @@ from shapely.geometry import Point, Polygon, box
 from shapely.ops import unary_union
 import cv2
 
-from ..logger import logger
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 class ROIManager:

@@ -7,7 +7,7 @@ from typing import List, Tuple, Optional
 from dataclasses import dataclass
 import cv2
 
-from ..logger import logger
+from .._logging import logger
 from ..config import TrackingConfig
 from ..detection.detector import Detection
 from .track_manager import TrackManager, Track

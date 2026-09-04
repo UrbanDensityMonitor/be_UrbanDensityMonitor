@@ -1,6 +1,6 @@
 from collections import deque
 import numpy as np
-from src.features.feature_extractor import TrafficFeatures
+from .feature_extractor import TrafficFeatures
 
 class StreamFeatureAggregator:
     def __init__(self, window_size_seconds: float) -> None:

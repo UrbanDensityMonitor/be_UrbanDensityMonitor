@@ -1,7 +1,6 @@
 """
-Traffic State Discovery Package
-Unsupervised traffic pattern analysis from CCTV streams
+Traffic State Discovery Package (runtime modules only).
+Versi riset lengkap ada di /research.
 """
 
-__version__ = "1.0.0"
-__author__ = "Research Team"
+__version__ = "2.0.0"

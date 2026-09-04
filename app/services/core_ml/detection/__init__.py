@@ -1,11 +1,6 @@
 """
-Vehicle detection modules using YOLO.
+Detection module (runtime).
 """
+from .detector import Detection
 
-from .detector import VehicleDetector
-from .model_loader import ModelLoader
-
-__all__ = [
-    'VehicleDetector',
-    'ModelLoader'
-]
+__all__ = ['Detection']

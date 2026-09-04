@@ -6,7 +6,7 @@ import numpy as np
 from typing import List, Tuple
 import cv2
 
-from ..logger import logger
+from .._logging import logger
 from ..tracking.track_manager import Track
 
 

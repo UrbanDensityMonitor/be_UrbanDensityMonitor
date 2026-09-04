@@ -1,8 +1,8 @@
 import re
 from pathlib import Path
 import pandas as pd
-from src.config import ProjectConfig
-from src.clustering.dbscan_clustering import DBSCANClusterer
+from ..config import ProjectConfig
+from .dbscan_clustering import DBSCANClusterer
 
 def get_latest_temporal_features_csv(temporal_dir: Path) -> Path:
     csv_files = list(temporal_dir.glob("*.csv"))

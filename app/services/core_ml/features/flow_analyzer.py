@@ -7,7 +7,7 @@ from typing import List, Tuple, Dict, Optional
 from collections import deque
 from dataclasses import dataclass
 
-from ..logger import logger
+from .._logging import logger
 from ..tracking.track_manager import Track
 
 

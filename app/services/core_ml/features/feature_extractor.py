@@ -8,7 +8,7 @@ from typing import List, Dict, Any, Optional, Tuple
 from dataclasses import dataclass, field
 from collections import defaultdict
 
-from ..logger import logger
+from .._logging import logger
 from ..config import FeatureExtractionConfig
 from ..tracking.track_manager import Track
 from ..roi.roi_manager import ROIManager

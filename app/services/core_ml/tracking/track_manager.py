@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from collections import defaultdict
 from filterpy.kalman import KalmanFilter
 
-from ..logger import logger
+from .._logging import logger
 from ..detection.detector import Detection
 
 

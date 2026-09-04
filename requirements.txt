@@ -1,21 +1,39 @@
+# Pinned versions — dihasilkan dari venv yang terverifikasi bekerja
+# Update dengan: pip install <pkg> && pip freeze | grep <pkg>
 
-fastapi
-uvicorn[standard]
-ultralytics
-opencv-python-headless
-scikit-learn
-asyncpg
-python-dotenv
-PyJWT[crypto]
-numpy
-torch
-pandas
-colorlog
-filterpy
-shapely
-scipy
-matplotlib
-seaborn
-tqdm
-pyyaml
-statsmodels
+# Web framework
+fastapi==0.140.13
+uvicorn==0.51.0
+
+# Computer Vision & ML
+ultralytics==8.4.110
+opencv-python-headless==5.0.0.93
+torch==2.13.0
+scikit-learn==1.9.0
+numpy==2.5.1
+pandas==3.0.5
+scipy==1.18.0
+filterpy==1.4.5
+shapely==2.1.2
+
+# Database
+asyncpg==0.31.0
+
+# Config & Auth
+python-dotenv==1.2.2
+pydantic==2.13.4
+pydantic-settings==2.15.0
+PyJWT==2.13.0
+
+# Utils
+colorlog==6.12.0
+tqdm==4.70.0
+PyYAML==6.0.3
+matplotlib==3.11.1
+seaborn==0.13.2
+statsmodels==0.14.6
+
+# Testing (dev only — tidak perlu di production image)
+pytest==9.1.1
+pytest-asyncio==1.4.0
+httpx==0.28.1

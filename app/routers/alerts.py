@@ -1,60 +1,75 @@
-from fastapi import APIRouter, Query, HTTPException, Depends
-from typing import Optional
+"""
+Router untuk Alerts endpoints
+Semua SQL ada di repository layer (Clean Architecture)
+"""
+import logging
 from datetime import datetime
+from typing import Optional
 
-from app.db.asyncpg_client import get_db_pool
+from fastapi import APIRouter, Query, HTTPException, Depends
+
 from app.auth.jwt_handler import verify_jwt
+from app.core.dependencies import get_alert_repository
+from app.repositories.alert_repository import AlertRepository
+
+logger = logging.getLogger(__name__)
+
 router = APIRouter(
-    prefix="/api/alerts",
+    prefix="/api/v1/alerts",
     tags=["Alerts & Notifications"]
 )
 
-@router.get("/")
+
+def _serialize_row(row: dict) -> dict:
+    """Serialize record: UUID -> str, datetime -> ISO string"""
+    item = dict(row)
+    for key in ("id", "traffic_history_id", "stream_id"):
+        if key in item and item[key] is not None:
+            item[key] = str(item[key])
+    for key, value in item.items():
+        if isinstance(value, datetime):
+            item[key] = value.isoformat()
+    return item
+
+
+@router.get("")
 async def get_alerts(
     stream_id: Optional[str] = Query(None, description="Filter alert CCTV tertentu"),
     is_read: Optional[bool] = Query(None, description="Filter yang belum/sudah dibaca"),
     limit: int = Query(20, description="Maksimal data alert"),
+    repo: AlertRepository = Depends(get_alert_repository),
     user_info: dict = Depends(verify_jwt)
 ):
-    pool = get_db_pool()
-    if not pool:
-        raise HTTPException(status_code=500, detail="Database belum siap!")
+    """Get daftar alert (optional filter per stream & status baca)"""
+    try:
+        rows = await repo.find_all(
+            stream_id=stream_id,
+            is_read=is_read,
+            limit=limit
+        )
+    except Exception as e:
+        logger.error(f"Error fetching alerts: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Gagal mengambil data alert")
 
-    query = "SELECT id, traffic_history_id, stream_id, alert_type, alert_message, is_read, created_at FROM alerts WHERE 1=1"
-    params = []
-    counter = 1
-
-    if stream_id:
-        query += f" AND stream_id = ${counter}"
-        params.append(stream_id)
-        counter += 1
-
-    if is_read is not None:
-        query += f" AND is_read = ${counter}"
-        params.append(is_read)
-        counter += 1
-
-    query += f" ORDER BY created_at DESC LIMIT ${counter}"
-    params.append(limit)
-
-    rows = await pool.fetch(query, *params)
-    alert_list = []
-    for row in rows:
-        item = dict(row)
-        item["id"] = str(item["id"])
-        item["traffic_history_id"] = str(item["traffic_history_id"])
-        item["stream_id"] = str(item["stream_id"])
-        if isinstance(item["created_at"], datetime):
-            item["created_at"] = item["created_at"].isoformat()
-        alert_list.append(item)
+    alert_list = [_serialize_row(row) for row in rows]
 
     return {"data": alert_list}
 
+
 @router.patch("/{alert_id}/read")
-async def mark_alert_read(alert_id: str, user_info: dict = Depends(verify_jwt)):
-    pool = get_db_pool()
-    if not pool:
-        raise HTTPException(status_code=500, detail="Database belum siap!")
-    query = "UPDATE alerts SET is_read = true WHERE id = $1"
-    await pool.execute(query, alert_id)
+async def mark_alert_read(
+    alert_id: str,
+    repo: AlertRepository = Depends(get_alert_repository),
+    user_info: dict = Depends(verify_jwt)
+):
+    """Tandai alert sebagai sudah dibaca"""
+    try:
+        updated = await repo.mark_as_read(alert_id)
+    except Exception as e:
+        logger.error(f"Error marking alert {alert_id} as read: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Gagal menandai alert")
+
+    if not updated:
+        raise HTTPException(status_code=404, detail="Alert tidak ditemukan")
+
     return {"message": f"✅ Alert {alert_id} berhasil ditandai sudah dibaca"}

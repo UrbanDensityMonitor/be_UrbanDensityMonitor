@@ -1,0 +1,3 @@
+"""
+Authentication layer (JWT verification)
+"""

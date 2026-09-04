@@ -6,7 +6,7 @@ import numpy as np
 from typing import List, Tuple, Optional
 from dataclasses import dataclass
 
-from ..logger import logger
+from .._logging import logger
 from ..tracking.track_manager import Track
 
 

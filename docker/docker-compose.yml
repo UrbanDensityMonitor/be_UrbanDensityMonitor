@@ -9,11 +9,5 @@ services:
     restart: always
     ports:
       - "8000:8000"
-    volumes:
-      - ../yolov8n.pt:/app/yolov8n.pt:ro
-      - ../yolov8s.pt:/app/yolov8s.pt:ro
-      - ../yolov8m.pt:/app/yolov8m.pt:ro
-      - ../yolov8l.pt:/app/yolov8l.pt:ro
-      - ../yolo11n.pt:/app/yolo11n.pt:ro
     env_file:
       - ../.env
