@@ -13,6 +13,7 @@ __pycache__/
 # Logs
 logs/
 *.log
+f
 
 # Test & tooling cache
 .pytest_cache/
