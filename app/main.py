@@ -6,31 +6,35 @@ import datetime
 import torch
 import logging
 import threading
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+import jwt
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query
 
 logger = logging.getLogger(__name__)
 from contextlib import asynccontextmanager
 from ultralytics import YOLO
-from app.routers import streams, history, alerts, users
+from app.routers import streams, history, alerts, users, private_streams
 from app.services.clustering import predict_density
 from app.db.asyncpg_client import init_db_pool, close_db_pool, get_db_pool
 from fastapi.middleware.cors import CORSMiddleware
+from app.auth.jwt_handler import decode_jwt_token
 
-async def save_to_db(payload, counts):
+async def save_to_db(payload, counts, stream_source="public"):
     try:
         pool = get_db_pool()
         if not pool: return
         query_history = """
         INSERT INTO traffic_history (
-            stream_id, person_count, motorcycle_count, car_count, bus_count, truck_count, 
+            stream_id, stream_source,
+            person_count, motorcycle_count, car_count, bus_count, truck_count, 
             total_vehicle_count, person_vehicle_ratio, density_status,
             average_speed, road_occupancy, congestion_index
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) RETURNING id
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) RETURNING id
         """
         total_v = counts["motorcycle"] + counts["car"] + counts["bus"] + counts["truck"]
         hist_id = await pool.fetchval(query_history,
-            payload["stream_id"], counts["person"], counts["motorcycle"], counts["car"], counts["bus"], counts["truck"],
+            payload["stream_id"], stream_source,
+            counts["person"], counts["motorcycle"], counts["car"], counts["bus"], counts["truck"],
             total_v, payload["person_vehicle_ratio"], payload["density_status"],
             payload.get("average_speed", 0.0), payload.get("road_occupancy", 0.0), payload.get("congestion_index", 0.0)
         )
@@ -71,6 +75,7 @@ app.include_router(streams.router)
 app.include_router(history.router)
 app.include_router(alerts.router)
 app.include_router(users.router)
+app.include_router(private_streams.router)
 
 from app.services.core_ml.config import TrackingConfig, FeatureExtractionConfig
 from app.services.core_ml.tracking.byte_tracker import ByteTrackTracker
@@ -97,7 +102,7 @@ def read_root():
     return {"message": "✅ Backend Urban Density Monitor Aktif!"}
 
 @app.websocket("/ws/live/{stream_id}")
-async def websocket_endpoint(websocket: WebSocket, stream_id: str):
+async def websocket_endpoint(websocket: WebSocket, stream_id: str, token: str = Query(default=None)):
     await websocket.accept()
     logger.info(f"🔗 Client terhubung ke stream: {stream_id}")
     pool = get_db_pool()
@@ -105,16 +110,62 @@ async def websocket_endpoint(websocket: WebSocket, stream_id: str):
         logger.error("❌ Database belum nyambung!")
         await websocket.close()
         return
+
+    stream_source = "public"  # default
     try:
-        query = "SELECT stream_url, location_name FROM streams WHERE id = $1"
-        row = await pool.fetchrow(query, stream_id)
-        if not row:
-            logger.warning(f"❌ CCTV dengan ID {stream_id} tidak ditemukan!")
-            await websocket.close()
-            return
-        stream_url = row["stream_url"]
-        stream_name = row["location_name"] if row["location_name"] else f"Stream {stream_id}"
-        logger.info(f"🎥 Membuka CCTV: {stream_url}")
+        # 1. Cari di tabel public streams terlebih dahulu
+        query_public = "SELECT stream_url, location_name FROM streams WHERE id = $1"
+        row = await pool.fetchrow(query_public, stream_id)
+
+        if row:
+            # ✅ Public stream ditemukan — behavior tetap seperti sebelumnya (tanpa auth)
+            stream_source = "public"
+            stream_url = row["stream_url"]
+            stream_name = row["location_name"] if row["location_name"] else f"Stream {stream_id}"
+            logger.info(f"🎥 Membuka PUBLIC CCTV: {stream_url}")
+        else:
+            # 2. Tidak ada di public → cari di private_streams
+            if not token:
+                logger.warning(f"❌ Stream {stream_id} bukan public & tidak ada token!")
+                await websocket.send_json({"error": "Authentication required for private stream"})
+                await websocket.close()
+                return
+
+            # Decode JWT token untuk mendapatkan user_id (HS256 + ES256 support)
+            try:
+                jwt_payload = decode_jwt_token(token)
+                ws_user_id = jwt_payload.get("sub")
+            except jwt.ExpiredSignatureError:
+                await websocket.send_json({"error": "Token expired"})
+                await websocket.close()
+                return
+            except Exception as jwt_err:
+                logger.error(f"❌ JWT decode error: {jwt_err}")
+                await websocket.send_json({"error": "Invalid token"})
+                await websocket.close()
+                return
+
+            # Cari private stream & verifikasi ownership
+            query_private = "SELECT stream_url, location_name, camera_name, user_id FROM private_streams WHERE id = $1"
+            row_private = await pool.fetchrow(query_private, stream_id)
+
+            if not row_private:
+                logger.warning(f"❌ Stream {stream_id} tidak ditemukan di public maupun private!")
+                await websocket.send_json({"error": "Stream not found"})
+                await websocket.close()
+                return
+
+            # Cek ownership — hanya owner yang boleh mengakses
+            if str(row_private["user_id"]) != ws_user_id:
+                logger.warning(f"⛔ User {ws_user_id} mencoba akses private stream milik {row_private['user_id']}")
+                await websocket.send_json({"error": "Access denied: you are not the owner of this stream"})
+                await websocket.close()
+                return
+
+            stream_source = "private"
+            stream_url = row_private["stream_url"]
+            stream_name = row_private["camera_name"] if row_private["camera_name"] else row_private["location_name"] or f"Private Stream {stream_id}"
+            logger.info(f"🔒 Membuka PRIVATE CCTV: {stream_url} (owner: {ws_user_id})")
 
     except Exception as e:
         logger.error(f"❌ Error Database: {e}")
@@ -293,7 +344,7 @@ async def websocket_endpoint(websocket: WebSocket, stream_id: str):
             latency_ms = waktu_proses_detik * 1000
             fps = 1.0 / waktu_proses_detik if waktu_proses_detik > 0 else 0.0
 
-            loop.call_soon_threadsafe(put_to_queue, (payload, counts, latency_ms, fps))
+            loop.call_soon_threadsafe(put_to_queue, (payload, counts, latency_ms, fps, stream_source))
             
             # Sleep untuk frame yang diproses agar sesuai dengan kecepatan aslinya (1.0x)
             elapsed_time = time.time() - start_waktu
@@ -308,8 +359,8 @@ async def websocket_endpoint(websocket: WebSocket, stream_id: str):
 
     try:
         while True:
-            payload, counts, latency_ms, fps = await q.get()
-            asyncio.create_task(save_to_db(payload, counts))
+            payload, counts, latency_ms, fps, src = await q.get()
+            asyncio.create_task(save_to_db(payload, counts, stream_source=src))
             await websocket.send_json(payload)
             logger.info(f"📊 YOLO 8s Latency: {latency_ms:.1f} ms | Speed: {fps:.1f} FPS")
 

@@ -4,6 +4,11 @@ from datetime import datetime
 
 from app.db.asyncpg_client import get_db_pool
 from app.auth.jwt_handler import verify_jwt
+
+import logging
+
+logger = logging.getLogger(__name__)
+
 router = APIRouter(
     prefix="/api/alerts",
     tags=["Alerts & Notifications"]
@@ -20,14 +25,35 @@ async def get_alerts(
     if not pool:
         raise HTTPException(status_code=500, detail="Database belum siap!")
 
-    query = "SELECT id, traffic_history_id, stream_id, alert_type, alert_message, is_read, created_at FROM alerts WHERE 1=1"
-    params = []
-    counter = 1
+    user_id = user_info.get("sub")
 
     if stream_id:
-        query += f" AND stream_id = ${counter}"
-        params.append(stream_id)
-        counter += 1
+        # Cek apakah stream_id milik private_streams
+        owner_row = await pool.fetchrow(
+            "SELECT user_id FROM private_streams WHERE id = $1", stream_id
+        )
+        if owner_row:
+            # Private stream → hanya owner yang boleh melihat alerts-nya
+            if str(owner_row["user_id"]) != user_id:
+                raise HTTPException(
+                    status_code=403,
+                    detail="⛔ Anda tidak memiliki akses ke alerts stream ini."
+                )
+
+        # Sudah terverifikasi: public stream atau private milik user
+        query = "SELECT id, traffic_history_id, stream_id, alert_type, alert_message, is_read, created_at FROM alerts WHERE stream_id = $1"
+        params = [stream_id]
+        counter = 2
+    else:
+        # Tanpa filter stream_id: tampilkan public alerts + private alerts milik user saja
+        query = """SELECT id, traffic_history_id, stream_id, alert_type, alert_message, is_read, created_at
+        FROM alerts
+        WHERE (
+            stream_id IN (SELECT id FROM streams)
+            OR stream_id IN (SELECT id FROM private_streams WHERE user_id = $1)
+        )"""
+        params = [user_id]
+        counter = 2
 
     if is_read is not None:
         query += f" AND is_read = ${counter}"
@@ -55,6 +81,30 @@ async def mark_alert_read(alert_id: str, user_info: dict = Depends(verify_jwt)):
     pool = get_db_pool()
     if not pool:
         raise HTTPException(status_code=500, detail="Database belum siap!")
+
+    user_id = user_info.get("sub")
+
+    # Ambil alert beserta stream_id untuk cek ownership
+    alert_row = await pool.fetchrow(
+        "SELECT id, stream_id FROM alerts WHERE id = $1", alert_id
+    )
+    if not alert_row:
+        raise HTTPException(status_code=404, detail="❌ Alert tidak ditemukan.")
+
+    # Cek apakah stream_id alert ini milik private_streams
+    owner_row = await pool.fetchrow(
+        "SELECT user_id FROM private_streams WHERE id = $1", alert_row["stream_id"]
+    )
+    if owner_row:
+        # Private stream alert → hanya owner yang boleh mark as read
+        if str(owner_row["user_id"]) != user_id:
+            raise HTTPException(
+                status_code=403,
+                detail="⛔ Anda tidak memiliki akses ke alert ini."
+            )
+
+    # Public alert atau private alert milik user → lanjut update
     query = "UPDATE alerts SET is_read = true WHERE id = $1"
     await pool.execute(query, alert_id)
     return {"message": f"✅ Alert {alert_id} berhasil ditandai sudah dibaca"}
+
