@@ -1,14 +1,9 @@
 import asyncpg
-import os
 import logging
-from dotenv import load_dotenv
+from app.core.config import settings
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
-
-load_dotenv()
-
-DATABASE_URL = os.getenv("DATABASE_URL")
 
 pool = None
 
@@ -17,7 +12,7 @@ async def init_db_pool():
     logger.info("🗄️ Menghubungkan ke Supabase (asyncpg)...")
     try:
         pool = await asyncpg.create_pool(
-            dsn=DATABASE_URL,
+            dsn=settings.database_url,
             min_size=2,
             max_size=10,
             statement_cache_size=0
@@ -32,5 +27,12 @@ async def close_db_pool():
         await pool.close()
         logger.info("🛑 Koneksi Database ditutup.")
 
+# Untuk pemanggilan manual (legacy) jika diperlukan
 def get_db_pool():
     return pool
+
+# Dependency Injection untuk FastAPI Endpoint
+async def get_db():
+    if not pool:
+        raise Exception("Database pool is not initialized")
+    yield pool
